@@ -1,0 +1,13 @@
+#!/bin/sh
+
+elvm="${ELVM-../elvm}"
+tty=$(stty -g)
+stty -icanon -echo -echonl -echoe -echok -inlcr -igncr -icrnl
+
+case "$1" in
+  "unl" ) unlambda vi.eir.unl ;;
+  "" ) $elvm/out/eli vi.eir ;;
+  * ) $* ;;
+esac
+
+stty $tty
