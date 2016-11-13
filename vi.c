@@ -17,15 +17,22 @@
  */
 
 #include <errno.h>
-#include <fcntl.h>
 #include <limits.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
+#include <sys/types.h>
+
+#ifndef __eir__
+#include <fcntl.h>
 #include <termios.h>
 #include <sys/ioctl.h>
-#include <sys/types.h>
+#endif
+
+#ifdef __eir__
+ #define NO_SIGNALS
+#endif
 
 #ifndef NO_SIGNALS
  #include <signal.h>
@@ -108,11 +115,11 @@ static int term_cols;
 
 /* Current editing locations (screen and file) */
 static int crsr_x, crsr_y, cur_line, line_shift;
-#define MAX_CRSR_SETSTRING 16
-static char crsr_set_string[MAX_CRSR_SETSTRING];
 
+#ifndef __eir__
 /* Current file name */
 static char curfile[PATH_MAX];
+#endif
 
 /* Track current line's struct pointer to avoid extra walks */
 static struct line *cur_line_s = NULL;
@@ -167,6 +174,49 @@ static void do_cursor_right(void);
 
 /***************************************************************************/
 
+#ifdef __eir__
+
+#define strncpy(buf, s, n) strcpy(buf, s)
+#define strncat(s1, s2, n) strcat(s1, s2)
+#define STDIN_FILENO 0
+#define STDOUT_FILENO 1
+#define EXIT_SUCCESS 0
+
+int write(int fd, const char* buf, size_t n) {
+	for (int i = 0; i < n; i++) {
+		putchar(*buf++);
+	}
+}
+
+int read(int fd, char* buf, size_t n) {
+	int c = getchar();
+	if (c == EOF)
+		return 0;
+	*buf = c;
+	return 1;
+}
+
+static const char *print_int_opt_tbl[] = {
+	"0", "1", "2", "3", "4", "5", "6", "7", "8", "9", "10",
+	"11", "12", "13", "14", "15", "16", "17", "18", "19", "20",
+	"21", "22", "23", "24", "25", "26", "27", "28", "29", "30",
+	"31", "32", "33", "34", "35", "36", "37", "38", "39", "40",
+	"41", "42", "43", "44", "45", "46", "47", "48", "49", "50",
+	"51", "52", "53", "54", "55", "56", "57", "58", "59", "60",
+	"61", "62", "63", "64", "65", "66", "67", "68", "69", "70",
+	"71", "72", "73", "74", "75", "76", "77", "78", "79", "80",
+	"81", "82", "83", "84", "85", "86", "87", "88", "89", "90",
+	"91", "92", "93", "94", "95", "96", "97", "98", "99"
+};
+
+void print_int_opt(int n) {
+	if (n < 100)
+		print_str(print_int_opt_tbl[n]);
+	else
+		print_int(n);
+}
+
+#endif
 
 /* Oh dear God, NO! */
 static void oh_dear_god_no(char *string)
@@ -179,21 +229,27 @@ static void oh_dear_god_no(char *string)
 
 
 /* Cursor control functions */
-void crsr_restore(void)
-{
-	sprintf(crsr_set_string, "\033[%d;%df", crsr_y, crsr_x);
-	write(STDOUT_FILENO, crsr_set_string, strlen(crsr_set_string));
-}
-
 void crsr_yx(int row, int col)
 {
-	sprintf(crsr_set_string, "\033[%d;%df", row, col);
-	write(STDOUT_FILENO, crsr_set_string, strlen(crsr_set_string));
+#ifndef __eir__
+	printf("\033[%d;%df", row, col);
+#else
+	putchar('\033');
+	putchar('[');
+	print_int_opt(row);
+	putchar(';');
+	print_int_opt(col);
+	putchar('f');
+#endif
+}
+
+void crsr_restore(void)
+{
+	crsr_yx(crsr_y, crsr_x);
 }
 
 static inline void set_scroll_area(void) {
-	sprintf(crsr_set_string, "\033[%d;%dr", 1, term_rows);
-	write(STDOUT_FILENO, crsr_set_string, strlen(crsr_set_string));
+	printf("\033[%d;%dr", 1, term_rows);
 }
 
 #ifndef NO_SIGNALS
@@ -216,6 +272,7 @@ void sigwinch_handler(int signum, siginfo_t *sig, void *context)
 
 /* Read terminal dimensions */
 static void read_term_dimensions(void)
+#ifndef __eir__
 {
 	struct winsize w;
 	ioctl(STDOUT_FILENO, TIOCGWINSZ, &w);
@@ -230,6 +287,36 @@ static void read_term_dimensions(void)
 
 	return;
 }
+#else // __eir__
+{
+	crsr_yx(127, 255);
+	print_str("\033[6n");
+	if (getchar() != '\033' || getchar() != '[')
+		goto err;
+	int row = 0;
+	int c;
+	while (isdigit(c = getchar())) {
+		row = row * 10 + c - '0';
+	}
+	if (c != ';')
+		goto err;
+	int col = 0;
+	while (isdigit(c = getchar()))
+		col = col * 10 + c - '0';
+	if (c != 'R')
+		goto err;
+	term_real_rows = row;
+	term_rows = row - 1;
+	term_cols = col;
+	return;
+
+ err:
+	strcpy(custom_status, "Cannot determine terminal size");
+	term_real_rows = 25;
+	term_rows = term_real_rows - 1;
+	term_cols = 80;
+}
+#endif // __eir__
 
 
 /* Write a line to the screen with appropriate shift */
@@ -242,9 +329,8 @@ static void redraw_line(struct line *line, int y)
 	if (!line->text) goto error_text_null;
 	p = line->text + line_shift;
 	len = line->len - line_shift;
-	sprintf(crsr_set_string, "\033[%d;1f", y);
+	crsr_yx(y, 1);
 	//ERASE_TO_EOL();
-	write(STDOUT_FILENO, crsr_set_string, strlen(crsr_set_string));
 	if (len > term_cols) len = term_cols;
 	if (len > 0) write(STDOUT_FILENO, p, len);
 	crsr_yx(y, len + 1);
@@ -470,7 +556,6 @@ static void destroy_buffer(struct line **head)
 
 static void update_status(void)
 {
-	char num[4];
 	int top_line;
 
 	/* Move the cursor to the last line */
@@ -485,17 +570,22 @@ static void update_status(void)
 
 	/* Print our location in the current line and file */
 	crsr_yx(term_real_rows, term_cols - 16);
+#ifndef __eir__
 	printf("%d,%d", cur_line, crsr_x + line_shift);
+#else
+	print_int_opt(cur_line);
+	putchar(',');
+	print_int_opt(crsr_x + line_shift);
+#endif
 	crsr_yx(term_real_rows, term_cols - 5);
 	top_line = 1 + (cur_line - crsr_y);
 	if (top_line < 1) goto error_top_line;
 	if (top_line == 1) {
 		write(STDOUT_FILENO, " Top", 4);
-	} else if ((cur_line + term_rows) >= line_count) {
+	} else if ((top_line + term_rows) >= line_count) {
 		write(STDOUT_FILENO, " Bot", 4);
 	} else {
-		sprintf(num, "%d%%", (line_count * 100) / top_line);
-		write(STDOUT_FILENO, num, strlen(num));
+		printf("%d%%", (top_line * 100) / line_count);
 	}
 
 	/* Put the cursor back where it was before we touched it */
@@ -582,7 +672,13 @@ static int do_del_under_crsr(int left)
 	p = cur_line_s->text + crsr_x + line_shift;
 
 	/* Copy everything down one char */
+#ifndef __eir__
 	memmove(p - 1, p, strlen(p) + 1);
+#else
+	for (; *p; p++)
+		*(p - 1) = *p;
+	*(p - 1) = 0;
+#endif
 	cur_line_s->len--;
 	if (crsr_x > (cur_line_s->len - line_shift) + (vi_mode > 0 ? 1 : 0)) crsr_x--;
 	if (crsr_x < 1) {
@@ -609,14 +705,17 @@ static void go_to_start_of_next_line(void)
 /* Restore terminal to original configuration */
 static void term_restore(void)
 {
+#ifndef __eir__
 	if (termdesc != -1) tcsetattr(termdesc, TCSANOW, &term_orig);
 	ENABLE_LINE_WRAP();
+#endif
 	return;
 }
 
 /* Initialize terminal settings */
 static int term_init(void)
 {
+#ifndef __eir__
 	/* Only init terminal once */
 	if (termdesc != -1) return 0;
 
@@ -667,6 +766,7 @@ static int term_init(void)
 
 	/* Finalize settings */
 	tcsetattr(termdesc, TCSANOW, &term_config);
+#endif  // __eir__
 
 	/* Disable automatic line wrapping */
 	DISABLE_LINE_WRAP();
@@ -695,15 +795,30 @@ void insert_char(char c)
 	case 1:	/* insert mode */
 		if (cur_line_s->alloc_size == (cur_line_s->len)) {
 			/* Allocate a larger buffer and insert to that */
+#ifndef __eir__
 			new_text = (char *)realloc(cur_line_s->text, cur_line_s->len << 1);
+#else
+			new_text = (char *)malloc(cur_line_s->len << 1);
+			memcpy(new_text, cur_line_s->text, cur_line_s->len);
+			free(cur_line_s->text);
+#endif
 			if (!new_text) oom();
 			cur_line_s->text = new_text;
 			cur_line_s->alloc_size = cur_line_s->len << 1;
 		}
 		/* Move text up by one byte */
 		p = cur_line_s->text + crsr_x + line_shift - 1;
+#ifndef __eir__
 		memmove(p + 1, p, strlen(p) + 1);
 		*p = c;
+#else
+		for (; c; p++) {
+			int tmp = *p;
+			*p = c;
+			c = tmp;
+		}
+		*p = c;
+#endif
 		if (crsr_x > term_cols) line_shift_increase(1);
 		else crsr_x++;
 		cur_line_s->len++;
@@ -740,8 +855,10 @@ void edit_mode(void)
 		case '\n':
 		case '\r':	/* New line */
 			fragment = cur_line_s->text + line_shift + crsr_x - 1;
+#ifndef __eir__
 			sprintf(custom_status, "txt %p, adjtxt %p, ls+cx %d+%d",
 					cur_line_s->text, fragment, line_shift, crsr_x);
+#endif
 
 			if (!alloc_new_line(cur_line, fragment, &line_count, &line_head)) oom();
 
@@ -874,6 +991,7 @@ static void do_cursor_up(void)
 	}
 	/* Pull the cursor to EOL if it is too far over */
 	if (crsr_x > cur_line_s->len) crsr_x = cur_line_s->len;
+	if (crsr_x == 0) crsr_x = 1;
 	line_shift = 0;
 	redraw_line(cur_line_s, crsr_y);
 
@@ -900,7 +1018,7 @@ static void do_cursor_down(void)
 	}
 	/* Pull the cursor to EOL if it is too far over */
 	if ((crsr_x + line_shift) > cur_line_s->len) {
-		if (cur_line_s->len <= line_shift)
+		if (cur_line_s->len && cur_line_s->len <= line_shift)
 			line_shift = cur_line_s->len - 1;
 		crsr_x = cur_line_s->len - line_shift;
 		if (crsr_x == 0) crsr_x = 1;
@@ -911,7 +1029,7 @@ static void do_cursor_down(void)
 	return;
 }
 
-
+#ifndef __eir__
 /* Load a file into buffer starting at a particular line */
 int load_file(const char * const restrict name, const int start_line)
 {
@@ -993,7 +1111,7 @@ int save_file(const char * const restrict name)
 	if (errno != 0) return -1;
 	return 0;
 }
-
+#endif // __eir__
 
 /* Get a movement subcommand
  * Returns 0 on valid movement, -1 on invalid movement or ESC
@@ -1164,6 +1282,7 @@ int do_cmd(char c)
 		write(STDOUT_FILENO, ":", 1);
 		cmd_len = get_command_string(command);
 		if (!cmd_len) break;
+#ifndef __eir__
 		if (strncmp(command, "wq", 2) == 0) {
 			/* Save to current file */
 			if (cmd_len == 2 && *curfile != '\0') {
@@ -1188,6 +1307,7 @@ int do_cmd(char c)
 			if (i) sprintf(custom_status, "Error while saving file");
 			goto end_cmd;
 		}
+#endif // __eir__
 		if (strcmp(command, "q") == 0) goto end_vi;
 		if (strcmp(command, "q!") == 0) goto end_vi;
 		break;
@@ -1230,13 +1350,16 @@ int main(int argc, char **argv)
 
 	/* Start an empty buffer or load a specified file */
 	cur_line = 1;
+#ifndef __eir__
 	if (argc == 1) {
 		*curfile = '\0';
+#endif // __eir__
 		cur_line_s = alloc_new_line(line_count, NULL, &line_count, &line_head);
 		if (!cur_line_s) {
 			fprintf(stderr, "Cannot create initial line\n");
 			clean_abort();
 		}
+#ifndef __eir__
 	} else {
 		strncpy(curfile, argv[1], PATH_MAX);
 		i = load_file(curfile, 0);
@@ -1247,11 +1370,14 @@ int main(int argc, char **argv)
 		cur_line_s = line_head;
 		sprintf(custom_status, "Read %d lines from '%s'", i, curfile);
 	}
+#endif // __eir__
 
 	/* Initialize the terminal */
 	if ((i = term_init()) != 0) {
+#ifndef __eir__
 		if (i == -ENOTTY) fprintf(stderr, "a tty is required\n");
 		else fprintf(stderr, "cannot init terminal: %s\n", strerror(-i));
+#endif
 		clean_abort();
 	}
 	read_term_dimensions();
@@ -1260,6 +1386,7 @@ int main(int argc, char **argv)
 	/* Initialize the cursor position and draw the screen */
 	crsr_x = 1; crsr_y = 1; line_shift = 0;
 	redraw_screen(0, 0);
+	update_status();
 
 	/* Read commands forever */
 	while (read(STDIN_FILENO, &c, 1)) do_cmd(c);
