@@ -9,13 +9,13 @@ RUNNERS := $(ELVM)/Whitespace/whitespace.out \
 all: vi $(TARGETS:%=vi.eir.%) $(RUNNERS)
 
 vi.eir: vi.c $(ELVM)/out/8cc
-	$(ELVM)/out/8cc -S -I$(ELVM)/libc $< -o $@
+	$(ELVM)/out/8cc -S -I$(ELVM)/libc -o $@ $<
 
 vi.eir.%: vi.eir $(ELVM)/out/elc
 	$(ELVM)/out/elc -$* $< >$@
 
 vi: vi.c
-	$(CC) -g -O0 $< -o $@
+	$(CC) -std=gnu99 -g -O0 -o $@ $<
 
 $(ELVM)/Makefile:
 	git clone https://github.com/shinh/elvm.git
