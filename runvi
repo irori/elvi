@@ -1,13 +1,24 @@
 #!/bin/sh
 
-elvm="${ELVM-../elvm}"
+elvm="${ELVM-elvm}"
 tty=$(stty -g)
 stty -icanon -echo -echonl -echoe -echok -inlcr -igncr -icrnl
 
 case "$1" in
-  "unl" ) unlambda vi.eir.unl ;;
-  "" ) $elvm/out/eli vi.eir ;;
-  * ) $* ;;
+    bf|unl|ws)
+	cp vi.eir.$1 $elvm/out/
+	cd $elvm
+	tools/run$1.sh out/vi.eir.$1
+	;;
+    bef)
+	$elvm/out/befunge vi.eir.bef
+	;;
+    eli)
+	$elvm/out/eli vi.eir
+	;;
+    *)
+	echo 'Usage: runvi [bf|unl|ws|bef|eli]'
+	;;
 esac
 
 stty $tty
